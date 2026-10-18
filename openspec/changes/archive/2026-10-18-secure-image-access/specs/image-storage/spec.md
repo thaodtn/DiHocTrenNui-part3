@@ -60,6 +60,11 @@ The frontend application SHALL fetch and render authenticated Cloudinary images 
 - **WHEN** an authorized user views an image in the image gallery or student profile
 - **THEN** the Next.js `Image` component renders the image using a temporary signed access URL obtained from the backend URL-issuing endpoint, handling expiration with automatic refresh
 
+#### Scenario: UI hides raw image URL input and strings
+- **WHEN** an authorized user opens the modal to create or edit an image in the image management interface
+- **THEN** the form SHALL NOT display or require a raw URL text input field, and SHALL NOT expose full signed URL strings in text labels, relying on file upload selection and visual preview
+
 #### Scenario: Temporary URLs are not persisted
 - **WHEN** temporary image access URLs are fetched by the browser
 - **THEN** the frontend avoids persisting the signed URLs in permanent storage or browser local storage
+

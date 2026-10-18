@@ -12,6 +12,7 @@ The backend is an Express 5 application on Node.js using TiDB with `mysql2` and 
 - Protect against IDOR by enforcing row-level student access controls before URL issuance.
 - Enable environment variable configuration for expiring URL durations (`CLOUDINARY_URL_EXPIRATION_SECONDS` and `CLOUDINARY_LIST_URL_EXPIRATION_SECONDS`) with safe defaults and clamping (60s to 86,400s).
 - Provide secure client-side rendering with automatic retry/refresh and zero secret leakage.
+- Hide raw image URL text inputs and raw URL string labels from the user interface to avoid confusing users with temporary expiring URLs or exposing internal asset paths.
 - Maintain backward-compatibility for existing public images and local mock tests.
 
 **Non-Goals:**
@@ -51,6 +52,13 @@ The backend is an Express 5 application on Node.js using TiDB with `mysql2` and 
   - If an image fails to load or the URL expires, execute a single refresh via `GET /images/:id/url`.
   - Enforce a strict retry limit (`maxRetries: 1`) to eliminate infinite reload loops.
   - Never save temporary URLs to `localStorage` or `sessionStorage`.
+
+### Decision 6: Hiding Raw Image URLs in the UI
+- **Choice**: Remove the manual URL input box (`Form Input: Image URL`) and raw URL text span (`title={formUrl}`) from the Create/Edit modal in `ImageListClient.tsx`.
+- **Form Behavior**:
+  - **Create**: Requires selecting an image file via the file picker; the backend handles uploading and generating storage keys.
+  - **Edit**: Allows selecting a new file to replace the existing image; if no new file is chosen, the existing asset reference is preserved without prompting the user to edit a raw URL.
+- **Rationale**: Ephemeral signed URLs contain time-sensitive tokens and query parameters (`__cld_token__` or `expires_at`) that should never be manually entered or edited by users.
 
 ## Risks / Trade-offs
 

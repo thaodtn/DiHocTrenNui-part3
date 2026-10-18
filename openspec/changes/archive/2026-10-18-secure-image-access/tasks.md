@@ -30,3 +30,10 @@
 - [x] 5.3 Update `formatImageResponse` and `getImageUrl` in `backend/controllers/ImageController.js` to resolve duration from environment variables
 - [x] 5.4 Add automated tests verifying custom environment variables override expiration duration for single URLs and list browsing
 
+## 6. Hide Image URL in User Interface
+
+- [x] 6.1 Remove the raw image URL text input field and URL text label from the Create/Edit modal in `frontend/src/app/(member)/images/_components/ImageListClient.tsx`
+- [x] 6.2 Update form submission and validation in `ImageListClient.tsx` to rely on file upload (`selectedFile`) or existing image data without requiring a manual URL string
+- [x] 6.3 Verify image creation, editing, and list browsing in the UI without exposing raw URL inputs
+
+

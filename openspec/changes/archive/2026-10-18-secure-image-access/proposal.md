@@ -11,6 +11,7 @@ Protected images (such as student photos) stored in Cloudinary were previously u
 - Implement server-side generation of short-lived expiring URLs using Cloudinary token-based authentication (`__cld_token__`) or signed download API (`private_download_url` with `expires_at`), without exposing Cloudinary API secrets.
 - Make expiring URL validity durations configurable via environment variables (`CLOUDINARY_URL_EXPIRATION_SECONDS` defaulting to 300s, `CLOUDINARY_LIST_URL_EXPIRATION_SECONDS` defaulting to 900s), with automatic clamping to safe limits.
 - Update frontend image fetching and components (`ImageListClient.tsx`, `SafeImage`) to load authenticated images via short-lived URLs, with automatic token refresh on expiration and retry limits to prevent request loops.
+- Streamline image management UI in `ImageListClient.tsx` by hiding raw URL input fields and raw URL text labels, ensuring users interact solely through file selection and visual image previews.
 - Prevent caching or persistence of temporary signed URLs in local storage or permanent database records.
 
 ## Capabilities

@@ -386,8 +386,8 @@ export default function ImageListClient({
     setFormError("");
     setSubmitting(true);
 
-    if (!formStudentId || (!formUrl && !selectedFile) || !formTimestamp) {
-      setFormError("Vui lòng điền đầy đủ các thông tin bắt buộc.");
+    if (!formStudentId || (modalMode === "create" && !selectedFile) || !formTimestamp) {
+      setFormError(modalMode === "create" && !selectedFile ? "Vui lòng chọn tệp hình ảnh để tải lên." : "Vui lòng điền đầy đủ các thông tin bắt buộc.");
       setSubmitting(false);
       return;
     }
@@ -408,10 +408,10 @@ export default function ImageListClient({
           await updateImage(editingImage.id, formData);
         }
       } else {
-        // Existing URL or update without replacing file
+        // Existing image update without replacing file
         const payload = {
           student_id: formStudentId as any,
-          url: sanitizeUrlForDatabase(formUrl),
+          url: sanitizeUrlForDatabase(editingImage?.url || formUrl),
           timestamp: new Date(formTimestamp).toISOString(),
           metadata: {
             month: formMonth,
@@ -830,11 +830,13 @@ export default function ImageListClient({
 
               {/* Form Input: Local Image Upload Selector */}
               <div className="space-y-1.5">
-                <label className="text-xs font-bold text-gray-700 uppercase tracking-wider block">Chọn tệp hình ảnh *</label>
+                <label className="text-xs font-bold text-gray-700 uppercase tracking-wider block">
+                  {modalMode === "create" ? "Chọn tệp hình ảnh *" : "Thay đổi tệp hình ảnh (tuỳ chọn)"}
+                </label>
                 <div className="flex items-center gap-3">
                   <label className="flex items-center gap-2 px-4 py-2 border border-primary-900 border-dashed rounded-xl cursor-pointer hover:bg-primary-900/5 text-primary-900 text-xs font-bold transition-all">
                     <Upload size={14} />
-                    <span>Chọn tệp từ máy tính</span>
+                    <span>{selectedFile ? "Chọn tệp khác" : "Chọn tệp từ máy tính"}</span>
                     <input
                       type="file"
                       accept="image/*"
@@ -842,41 +844,21 @@ export default function ImageListClient({
                       className="hidden"
                     />
                   </label>
-                  {formUrl && (
-                    <span className="text-xs text-gray-500 truncate max-w-[200px]" title={formUrl}>
-                      {formUrl}
+                  {selectedFile && (
+                    <span className="text-xs text-gray-600 font-medium truncate max-w-[200px]" title={selectedFile.name}>
+                      {selectedFile.name}
                     </span>
                   )}
                 </div>
               </div>
 
-              {/* Form Input: Image URL */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-gray-700 uppercase tracking-wider">Đường dẫn hình ảnh (URL) {selectedFile ? "(Tự động từ tệp đã chọn)" : "*"}</label>
-                <input
-                  type="text"
-                  required={!selectedFile}
-                  value={formUrl}
-                  onChange={(e) => {
-                    setFormUrl(e.target.value);
-                    setFormFileData("");
-                    setSelectedFile(null);
-                    if (previewUrl && previewUrl.startsWith("blob:")) {
-                      URL.revokeObjectURL(previewUrl);
-                    }
-                    setPreviewUrl("");
-                  }}
-                  placeholder="https://example.com/image.jpg hoặc chọn tệp bên trên"
-                  className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-primary-700 focus:ring-1 focus:ring-primary-700/30"
-                />
-              </div>
-
               {/* Image Preview Box */}
-              {(previewUrl || formUrl || formFileData) && (
+              {(previewUrl || formFileData || (modalMode === "edit" && formUrl)) && (
                 <div className="space-y-1 bg-gray-50 p-2.5 rounded-xl border border-gray-100">
                   <span className="text-[10px] text-gray-400 font-medium block">Xem trước ảnh:</span>
                   <div className="relative w-full aspect-[4/3] rounded-lg overflow-hidden border border-gray-200 bg-white">
                     <SafeImage
+                      imageId={modalMode === "edit" && !selectedFile && editingImage ? editingImage.id : undefined}
                       src={previewUrl || formFileData || (formUrl ? `${getProxiedUrl(formUrl)}${getProxiedUrl(formUrl).includes('?') ? '&' : '?'}_t=${editingImage?.timestamp ? new Date(editingImage.timestamp).getTime() : Date.now()}` : "")}
                       alt="Xem trước hình ảnh"
                       fill
