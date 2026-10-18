@@ -2,7 +2,8 @@ const ImageModel = require('../models/ImageModel');
 const { validateImage } = require('../validations/imageValidation');
 const { sendSuccess, sendError } = require('../utils/responseHandler');
 const { paginate } = require('../utils/pagination');
-const { uploadStream, deleteAsset, isConfigured } = require('../config/cloudinary');
+const cloudinaryConfig = require('../config/cloudinary');
+const { uploadStream, deleteAsset, isConfigured } = cloudinaryConfig;
 const db = require('../config/db');
 const path = require('path');
 const fs = require('fs');
@@ -21,6 +22,26 @@ function formatImageResponse(image, req) {
       image.metadata = JSON.parse(image.metadata);
     } catch (e) {
       // keep original
+    }
+  }
+
+  // If this is a Cloudinary asset with public_id, generate short-lived expiring URL for secure delivery
+  if (image.metadata && image.metadata.public_id && isConfigured()) {
+    try {
+      const envListDuration = parseInt(process.env.CLOUDINARY_LIST_URL_EXPIRATION_SECONDS, 10);
+      const listDuration = (!isNaN(envListDuration) && envListDuration > 0) ? envListDuration : 900;
+      const expiring = cloudinaryConfig.generateExpiringUrl(image.metadata.public_id, {
+        duration: listDuration,
+        deliveryType: image.metadata.delivery_type || image.metadata.type || 'authenticated',
+        format: image.metadata.format,
+      });
+      return {
+        ...image,
+        url: expiring.url,
+        expiresAt: expiring.expiresAt,
+      };
+    } catch (err) {
+      console.error('[formatImageResponse] Failed to generate expiring URL:', err.message);
     }
   }
 
@@ -166,6 +187,71 @@ class ImageController {
     }
   }
 
+  async getImageUrl(req, res) {
+    try {
+      const imageId = parseInt(req.params.id, 10);
+      if (isNaN(imageId) || imageId <= 0) {
+        return sendError(res, 'Invalid image ID', [], 400);
+      }
+
+      const rawImage = await ImageModel.findById(imageId);
+      if (!rawImage) {
+        return sendError(res, 'Image not found', [], 404);
+      }
+
+      const image = await ImageModel.findById(imageId, req.user);
+      if (!image) {
+        return sendError(res, 'Access Denied: You are not authorized to view this image', [], 403);
+      }
+
+      let meta = image.metadata;
+      if (typeof meta === 'string') {
+        try { meta = JSON.parse(meta); } catch (e) { meta = {}; }
+      }
+      meta = meta || {};
+
+      const publicId = meta.public_id;
+      const deliveryType = meta.delivery_type || meta.type || 'authenticated';
+      const format = meta.format;
+
+      // Set mandatory security cache headers to prevent caching of sensitive temporary URLs
+      res.setHeader('Cache-Control', 'private, no-store, max-age=0, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+
+      // If not a Cloudinary asset or Cloudinary not configured, return fallback proxy response
+      if (!publicId || !isConfigured()) {
+        const formatted = formatImageResponse(image, req);
+        return sendSuccess(res, {
+          id: image.id,
+          url: formatted.url,
+          expiresAt: null,
+          expiresIn: null,
+        }, 'Image access URL retrieved successfully');
+      }
+
+      const envUrlDuration = parseInt(process.env.CLOUDINARY_URL_EXPIRATION_SECONDS, 10);
+      const defaultDuration = (!isNaN(envUrlDuration) && envUrlDuration > 0) ? envUrlDuration : 300;
+      const requestedDuration = req.query.duration ? parseInt(req.query.duration, 10) : defaultDuration;
+      const duration = Math.min(Math.max((!isNaN(requestedDuration) && requestedDuration > 0) ? requestedDuration : defaultDuration, 60), 86400);
+
+      const result = cloudinaryConfig.generateExpiringUrl(publicId, {
+        duration,
+        deliveryType,
+        format,
+      });
+
+      return sendSuccess(res, {
+        id: image.id,
+        url: result.url,
+        expiresAt: result.expiresAt,
+        expiresIn: result.expiresIn,
+      }, 'Image access URL generated successfully');
+    } catch (error) {
+      console.error('[getImageUrl Error] Failed to generate secure access URL:', error.message);
+      return sendError(res, 'Failed to generate secure image access URL', error.message, 500);
+    }
+  }
+
   async getImagesByStudent(req, res) {
     try {
       const studentId = req.params.studentId;
@@ -220,11 +306,12 @@ class ImageController {
         const studentId = req.body.student_id || 'unassigned';
         const folder = `dhtn/students/${studentId}`;
 
-        uploadedAsset = await uploadStream(req.file.buffer, { folder });
+        uploadedAsset = await uploadStream(req.file.buffer, { folder, type: 'authenticated' });
         req.body.url = uploadedAsset.secure_url;
         metadataObj = {
           ...metadataObj,
           public_id: uploadedAsset.public_id,
+          delivery_type: uploadedAsset.type || 'authenticated',
           width: uploadedAsset.width,
           height: uploadedAsset.height,
           format: uploadedAsset.format,
@@ -241,11 +328,12 @@ class ImageController {
           const buffer = Buffer.from(fileData.substring(commaIdx + 8), 'base64');
           if (isConfigured()) {
             const studentId = req.body.student_id || 'unassigned';
-            uploadedAsset = await uploadStream(buffer, { folder: `dhtn/students/${studentId}` });
+            uploadedAsset = await uploadStream(buffer, { folder: `dhtn/students/${studentId}`, type: 'authenticated' });
             req.body.url = uploadedAsset.secure_url;
             metadataObj = {
               ...metadataObj,
               public_id: uploadedAsset.public_id,
+              delivery_type: uploadedAsset.type || 'authenticated',
               width: uploadedAsset.width,
               height: uploadedAsset.height,
               format: uploadedAsset.format,
@@ -347,11 +435,12 @@ class ImageController {
         const studentId = req.body.student_id || existingImage.student_id || 'unassigned';
         const folder = `dhtn/students/${studentId}`;
 
-        newlyUploadedAsset = await uploadStream(req.file.buffer, { folder });
+        newlyUploadedAsset = await uploadStream(req.file.buffer, { folder, type: 'authenticated' });
         req.body.url = newlyUploadedAsset.secure_url;
         incomingMeta = {
           ...incomingMeta,
           public_id: newlyUploadedAsset.public_id,
+          delivery_type: newlyUploadedAsset.type || 'authenticated',
           width: newlyUploadedAsset.width,
           height: newlyUploadedAsset.height,
           format: newlyUploadedAsset.format,
@@ -367,11 +456,12 @@ class ImageController {
           const buffer = Buffer.from(fileData.substring(commaIdx + 8), 'base64');
           if (isConfigured()) {
             const studentId = req.body.student_id || existingImage.student_id || 'unassigned';
-            newlyUploadedAsset = await uploadStream(buffer, { folder: `dhtn/students/${studentId}` });
+            newlyUploadedAsset = await uploadStream(buffer, { folder: `dhtn/students/${studentId}`, type: 'authenticated' });
             req.body.url = newlyUploadedAsset.secure_url;
             incomingMeta = {
               ...incomingMeta,
               public_id: newlyUploadedAsset.public_id,
+              delivery_type: newlyUploadedAsset.type || 'authenticated',
               width: newlyUploadedAsset.width,
               height: newlyUploadedAsset.height,
               format: newlyUploadedAsset.format,
@@ -465,7 +555,9 @@ class ImageController {
         const isReferenced = await isPublicIdReferencedElsewhere(existingMeta.public_id, imageId);
         if (!isReferenced) {
           try {
-            await deleteAsset(existingMeta.public_id);
+            await deleteAsset(existingMeta.public_id, {
+              type: existingMeta.delivery_type || existingMeta.type || 'authenticated',
+            });
             console.log(`[Cloudinary Deletion] Asset ${existingMeta.public_id} deleted safely`);
           } catch (delErr) {
             console.error(`[Cloudinary Deletion Error] Failed to delete asset ${existingMeta.public_id}:`, delErr.message);

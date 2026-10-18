@@ -14,6 +14,7 @@ router.get('/range', authorize(ACTIONS.READ, RESOURCES.IMAGE), ImageController.g
 
 // Standard CRUD Routes for Images with Multipart Upload support
 router.get('/', authorize(ACTIONS.READ, RESOURCES.IMAGE), ImageController.getAllImages);
+router.get('/:id/url', authorize(ACTIONS.READ, RESOURCES.IMAGE), ImageController.getImageUrl);
 router.get('/:id', authorize(ACTIONS.READ, RESOURCES.IMAGE), ImageController.getImageById);
 router.post('/', authorize(ACTIONS.CREATE, RESOURCES.IMAGE), handleSingleUpload('image'), ImageController.createImage);
 router.patch('/:id', authorize(ACTIONS.UPDATE, RESOURCES.IMAGE), handleSingleUpload('image'), ImageController.updateImage);

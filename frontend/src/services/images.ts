@@ -104,6 +104,30 @@ export async function getImageById(id: number): Promise<ApiResponse<Image>> {
     }
 }
 
+export interface ImageAccessUrl {
+    id: number;
+    url: string;
+    expiresAt: string | null;
+    expiresIn: number | null;
+}
+
+/** GET /images/:id/url — Fetch a short-lived authorized access URL for an image. */
+export async function getImageUrl(id: number, duration?: number): Promise<ApiResponse<ImageAccessUrl>> {
+    const headers = await getAuthHeaders();
+    try {
+        let url = `${BASE_URL}/images/${id}/url`;
+        if (duration) {
+            url += `?duration=${duration}`;
+        }
+        const res = await fetch(url, { method: "GET", headers, cache: "no-store" });
+        if (!res.ok) throw new Error(`Failed to fetch image access URL for image ${id}: ${res.status} ${res.statusText}`);
+        return res.json();
+    } catch (error) {
+        console.error("[getImageUrl]", error);
+        throw error;
+    }
+}
+
 /** GET /images/student/:studentId — Fetch all images for a specific student. */
 export async function getImagesByStudent(studentId: string | number): Promise<ApiResponse<Image[]>> {
     const headers = await getAuthHeaders();

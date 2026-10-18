@@ -29,7 +29,8 @@ import {
   updateImage,
   deleteImage,
   getImagesByStudent,
-  getImagesByRange
+  getImagesByRange,
+  getImageUrl
 } from "@/services/images";
 import { Student } from "@/services/students";
 
@@ -41,23 +42,46 @@ const PAGE_SIZE_OPTIONS = [8, 16, 24];
 
 
 // ─────────────────────────────────────────────────────────────
-// Safe Image Component (with local placeholder error fallback)
+// Safe Image Component (with token refresh & error fallback)
 // ─────────────────────────────────────────────────────────────
-function SafeImage({ src, alt, fallbackSrc = "/images/default-avatar.jpg", ...props }: any) {
+function SafeImage({
+  src,
+  alt,
+  fallbackSrc = "/images/default-avatar.jpg",
+  imageId,
+  ...props
+}: any) {
   const [imgSrc, setImgSrc] = useState(src);
+  const [retried, setRetried] = useState(false);
 
   useEffect(() => {
     setImgSrc(src);
+    setRetried(false);
   }, [src]);
+
+  const handleError = async () => {
+    // If not already retried and imageId is available, attempt a single refresh
+    if (!retried && imageId) {
+      setRetried(true);
+      try {
+        const res = await getImageUrl(imageId);
+        if (res && res.data && res.data.url) {
+          setImgSrc(res.data.url);
+          return;
+        }
+      } catch (e) {
+        console.warn("[SafeImage] Refresh failed, using fallback:", e);
+      }
+    }
+    setImgSrc(fallbackSrc);
+  };
 
   return (
     <Image
       {...props}
       src={imgSrc}
       alt={alt}
-      onError={() => {
-        setImgSrc(fallbackSrc);
-      }}
+      onError={handleError}
     />
   );
 }
@@ -567,6 +591,7 @@ export default function ImageListClient({
                   <SafeImage
                     src={`${img.url}${img.url.includes('?') ? '&' : '?'}_t=${img.timestamp ? new Date(img.timestamp).getTime() : Date.now()}`}
                     alt={`Ảnh HS: ${studentName}`}
+                    imageId={img.id}
                     fill
                     className="object-cover group-hover:scale-105 transition-transform duration-500"
                     sizes="(max-width: 640px) 100vw, (max-width: 768px) 50vw, 33vw"

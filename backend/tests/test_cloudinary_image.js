@@ -16,6 +16,7 @@ require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 const { validateMagicBytes, MAX_FILE_SIZE_MB } = require('../middlewares/upload');
 const cloudinaryConfig = require('../config/cloudinary');
 const ImageModel = require('../models/ImageModel');
+const ImageController = require('../controllers/ImageController');
 const db = require('../config/db');
 
 let passedTests = 0;
@@ -123,7 +124,8 @@ async function runTests() {
       assert.strictEqual(uploadResult.public_id, 'dhtn/students/HS0001/mock_img_123');
       assert.strictEqual(uploadResult.format, 'jpg');
       assert.strictEqual(streamOptionsUsed.folder, 'dhtn/students/HS0001');
-      logPass('uploadStream correctly streamed memory buffer and received secure_url and public_id');
+      assert.strictEqual(streamOptionsUsed.type, 'authenticated', 'Upload stream should default to authenticated delivery');
+      logPass('uploadStream correctly streamed memory buffer with authenticated delivery type');
 
       const destroyResult = await cloudinaryConfig.deleteAsset('dhtn/students/HS0001/mock_img_123');
       assert.strictEqual(destroyResult.result, 'ok');
@@ -250,6 +252,191 @@ async function runTests() {
       logPass('Rollback cleanup successfully invoked on database insert failure');
     } finally {
       cloudinaryConfig.cloudinary.uploader.destroy = originalDestroy;
+    }
+  });
+
+  // ─── 6. Cloudinary Expiring Access URL Generation Service ─────────────────────
+  await testSection('6. Cloudinary Expiring Access URL Generation', async () => {
+    const originalTokenKey = process.env.CLOUDINARY_AUTH_TOKEN_KEY;
+
+    try {
+      // 6.1 Token-based delivery with CLOUDINARY_AUTH_TOKEN_KEY
+      process.env.CLOUDINARY_AUTH_TOKEN_KEY = '0123456789abcdef0123456789abcdef';
+      const tokenResult = cloudinaryConfig.generateExpiringUrl('dhtn/students/HS0001/photo', {
+        duration: 300,
+        format: 'jpg',
+        deliveryType: 'authenticated',
+      });
+
+      assert.ok(tokenResult.url.includes('https://res.cloudinary.com'), 'Should be a res.cloudinary.com URL');
+      assert.ok(tokenResult.url.includes('/image/authenticated/'), 'Should use authenticated delivery type path');
+      assert.ok(tokenResult.url.includes('__cld_token__=exp='), 'Should contain __cld_token__ with exp param');
+      assert.ok(tokenResult.url.includes('hmac='), 'Should contain HMAC signature in token');
+      assert.strictEqual(tokenResult.expiresIn, 300);
+      assert.ok(new Date(tokenResult.expiresAt).getTime() > Date.now(), 'expiresAt should be in the future');
+      assert.strictEqual(tokenResult.deliveryType, 'authenticated');
+      logPass('generateExpiringUrl generated valid edge-expiring token URL with __cld_token__');
+
+      // 6.2 Fallback: Private download signed URL without CLOUDINARY_AUTH_TOKEN_KEY
+      delete process.env.CLOUDINARY_AUTH_TOKEN_KEY;
+      const downloadResult = cloudinaryConfig.generateExpiringUrl('dhtn/students/HS0001/photo', {
+        duration: 180,
+        format: 'png',
+        deliveryType: 'authenticated',
+      });
+
+      assert.ok(downloadResult.url.includes('api.cloudinary.com'), 'Fallback should use Cloudinary download API');
+      assert.ok(downloadResult.url.includes('expires_at='), 'Fallback should contain expires_at parameter');
+      assert.ok(downloadResult.url.includes('signature='), 'Fallback should contain signature parameter');
+      assert.strictEqual(downloadResult.expiresIn, 180);
+      assert.strictEqual(downloadResult.deliveryType, 'authenticated');
+      logPass('generateExpiringUrl correctly generated fallback signed download URL with expires_at');
+
+      // 6.3 Input validation
+      assert.throws(() => {
+        cloudinaryConfig.generateExpiringUrl('');
+      }, /Invalid publicId/, 'Should throw on empty publicId');
+
+      assert.throws(() => {
+        cloudinaryConfig.generateExpiringUrl(null);
+      }, /Invalid publicId/, 'Should throw on null publicId');
+      logPass('generateExpiringUrl validated publicId parameter successfully');
+
+      // 6.4 Environment variable expiration configuration & clamping
+      const originalEnvDuration = process.env.CLOUDINARY_URL_EXPIRATION_SECONDS;
+      try {
+        // Test custom duration override via environment
+        process.env.CLOUDINARY_URL_EXPIRATION_SECONDS = '600';
+        const customEnvResult = cloudinaryConfig.generateExpiringUrl('dhtn/students/HS0001/photo');
+        assert.strictEqual(customEnvResult.expiresIn, 600, 'Should respect CLOUDINARY_URL_EXPIRATION_SECONDS');
+        logPass('generateExpiringUrl respected custom duration from CLOUDINARY_URL_EXPIRATION_SECONDS (600s)');
+
+        // Test clamping to minimum 60s
+        process.env.CLOUDINARY_URL_EXPIRATION_SECONDS = '20';
+        const minClampResult = cloudinaryConfig.generateExpiringUrl('dhtn/students/HS0001/photo');
+        assert.strictEqual(minClampResult.expiresIn, 60, 'Should clamp duration to minimum 60s');
+        logPass('generateExpiringUrl clamped below-threshold duration to minimum 60s');
+
+        // Test clamping to maximum 86400s (24h)
+        process.env.CLOUDINARY_URL_EXPIRATION_SECONDS = '100000';
+        const maxClampResult = cloudinaryConfig.generateExpiringUrl('dhtn/students/HS0001/photo');
+        assert.strictEqual(maxClampResult.expiresIn, 86400, 'Should clamp duration to maximum 86400s');
+        logPass('generateExpiringUrl clamped above-threshold duration to maximum 86400s');
+
+        // Test fallback on invalid non-numeric input
+        process.env.CLOUDINARY_URL_EXPIRATION_SECONDS = 'invalid-text';
+        const invalidFallbackResult = cloudinaryConfig.generateExpiringUrl('dhtn/students/HS0001/photo');
+        assert.strictEqual(invalidFallbackResult.expiresIn, 300, 'Should fall back to default 300s');
+        logPass('generateExpiringUrl safely fell back to default 300s on invalid env input');
+      } finally {
+        if (originalEnvDuration !== undefined) {
+          process.env.CLOUDINARY_URL_EXPIRATION_SECONDS = originalEnvDuration;
+        } else {
+          delete process.env.CLOUDINARY_URL_EXPIRATION_SECONDS;
+        }
+      }
+
+    } finally {
+      if (originalTokenKey) {
+        process.env.CLOUDINARY_AUTH_TOKEN_KEY = originalTokenKey;
+      } else {
+        delete process.env.CLOUDINARY_AUTH_TOKEN_KEY;
+      }
+    }
+  });
+
+  // ─── 7. Backend URL-Issuing Endpoint (GET /images/:id/url) & IDOR Protection ──
+  await testSection('7. Backend URL-Issuing Endpoint (GET /images/:id/url) & IDOR Protection', async () => {
+    function createMockRes() {
+      const headers = {};
+      let statusCode = 200;
+      let sentData = null;
+      return {
+        setHeader(k, v) { headers[k.toLowerCase()] = v; },
+        getHeader(k) { return headers[k.toLowerCase()]; },
+        getHeaders() { return headers; },
+        status(code) { statusCode = code; return this; },
+        json(data) { sentData = data; return this; },
+        send(data) { sentData = data; return this; },
+        getStatusCode() { return statusCode; },
+        getData() { return sentData; },
+      };
+    }
+
+    // 7.1 Reject invalid ID format
+    const resInvalidId = createMockRes();
+    await ImageController.getImageUrl({ params: { id: 'invalid-id' }, query: {}, user: { id: 1, role_id: 1 } }, resInvalidId);
+    assert.strictEqual(resInvalidId.getStatusCode(), 400);
+    assert.strictEqual(resInvalidId.getData().success, false);
+    logPass('getImageUrl rejected non-numeric image ID with 400 Bad Request');
+
+    // 7.2 Return 404 for missing image
+    const resNotFound = createMockRes();
+    await ImageController.getImageUrl({ params: { id: 88888888 }, query: {}, user: { id: 1, role_id: 1 } }, resNotFound);
+    assert.strictEqual(resNotFound.getStatusCode(), 404);
+    assert.strictEqual(resNotFound.getData().success, false);
+    logPass('getImageUrl returned 404 Not Found for non-existent image record');
+
+    // Setup an isolated test image in TiDB for authorization testing
+    const testSecureId = 99997;
+    await ImageModel.delete(testSecureId).catch(() => {});
+    await ImageModel.create({
+      id: testSecureId,
+      student_id: 'HS_RESTRICTED_99',
+      event_id: 'EVT_SEC_01',
+      timestamp: new Date(),
+      url: 'https://res.cloudinary.com/test-cloud/image/authenticated/v1/dhtn/students/HS_RESTRICTED_99/photo.jpg',
+      metadata: {
+        public_id: 'dhtn/students/HS_RESTRICTED_99/photo',
+        format: 'jpg',
+        delivery_type: 'authenticated',
+      },
+    });
+
+    try {
+      // 7.3 IDOR Protection: Unauthorized user (e.g. Sponsor not assigned to HS_RESTRICTED_99)
+      const resForbidden = createMockRes();
+      const unauthorizedUser = { id: 999, role_id: 4 }; // Sponsor role
+      await ImageController.getImageUrl({ params: { id: String(testSecureId) }, query: {}, user: unauthorizedUser }, resForbidden);
+      assert.strictEqual(resForbidden.getStatusCode(), 403, 'Should reject unauthorized student image access with 403');
+      assert.strictEqual(resForbidden.getData().success, false);
+      assert.ok(resForbidden.getData().message.includes('Access Denied'));
+      logPass('getImageUrl prevented IDOR access attempt with 403 Forbidden');
+
+      // 7.4 Authorized access: Admin (role_id: 1)
+      const resAuthorized = createMockRes();
+      const adminUser = { id: 1, role_id: 1 };
+      await ImageController.getImageUrl({ params: { id: String(testSecureId) }, query: { duration: '300' }, user: adminUser }, resAuthorized);
+      assert.strictEqual(resAuthorized.getStatusCode(), 200);
+      assert.strictEqual(resAuthorized.getData().success, true);
+      assert.ok(resAuthorized.getData().data.url, 'Should return temporary access URL');
+      assert.ok(resAuthorized.getData().data.expiresAt, 'Should return ISO expiresAt timestamp');
+      assert.strictEqual(resAuthorized.getData().data.expiresIn, 300);
+
+      // Verify Cache-Control: private, no-store headers
+      const cacheControl = resAuthorized.getHeader('cache-control');
+      assert.ok(cacheControl && cacheControl.includes('no-store'), 'Response must include Cache-Control: no-store');
+      assert.ok(cacheControl && cacheControl.includes('private'), 'Response must include Cache-Control: private');
+      logPass('getImageUrl returned 200 with expiring URL and Cache-Control: private, no-store headers');
+
+      // 7.5 Safe Error Handling: Cloudinary failure must not leak public URL
+      const originalGenerateExpiringUrl = cloudinaryConfig.generateExpiringUrl;
+      const resError = createMockRes();
+      try {
+        cloudinaryConfig.generateExpiringUrl = () => {
+          throw new Error('Cloudinary signature calculation failed');
+        };
+        await ImageController.getImageUrl({ params: { id: String(testSecureId) }, query: {}, user: adminUser }, resError);
+        assert.strictEqual(resError.getStatusCode(), 500);
+        assert.strictEqual(resError.getData().success, false);
+        assert.strictEqual(resError.getData().data, undefined, 'Must not return public URL fallback on error');
+        logPass('getImageUrl handled signing failure safely with 500 without public fallback');
+      } finally {
+        cloudinaryConfig.generateExpiringUrl = originalGenerateExpiringUrl;
+      }
+
+    } finally {
+      await ImageModel.delete(testSecureId).catch(() => {});
     }
   });
 
